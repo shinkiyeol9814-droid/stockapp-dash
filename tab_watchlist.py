@@ -167,7 +167,7 @@ def _load_all_rows(watchlist: dict, local_settings: dict | None = None) -> list:
 def layout():
     return html.Div([
         dcc.Store(id="wl-local-settings", storage_type="session", data={}),
-        dcc.Interval(id="wl-interval", interval=60 * 1000, n_intervals=0),
+        dcc.Interval(id="wl-interval", interval=3 * 60 * 1000, n_intervals=0),
 
         # Header
         dbc.Row([

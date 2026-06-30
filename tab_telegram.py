@@ -13,7 +13,7 @@ _URL_RE = re.compile(r"(https?://[^\s<>\"']+[^\s<>\"'.,!?)\]])")
 
 def _get_config():
     try:
-        api_id  = os.environ.get("TELEGRAM_API_ID",   "")
+        api_id   = os.environ.get("TELEGRAM_API_ID",   "")
         api_hash = os.environ.get("TELEGRAM_API_HASH", "")
         session  = os.environ.get("TELEGRAM_SESSION",  "")
         return int(api_id) if api_id else 0, api_hash, session
@@ -141,13 +141,7 @@ def _render_msg(msg: dict) -> html.Div:
                   "padding": "10px 14px", "marginBottom": "6px", "background": "#fff"})
 
     elif text:
-        full_html = _linkify(text.replace("\n", "<br>"))
-        preview   = text[:120].replace("\n", " ")
-        is_long   = len(text) > 120
-        content   = html.Div(
-            dcc.Markdown(text[:300] + ("…" if is_long else ""),
-                         style={"fontSize": "13px", "color": "#222", "lineHeight": "1.7"}),
-        )
+        is_long = len(text) > 120
         return html.Div([
             html.Div(f"🕐 {time_str}", style={"fontSize": "11px", "color": "#999", "marginBottom": "3px"}),
             html.Div(
@@ -174,32 +168,30 @@ def layout():
             ),
         ])
 
-    dialogs = load_dialogs()
-    if not dialogs:
-        return html.Div([
-            html.H5("💬 텔레그램 채널 뷰어"),
-            dbc.Alert("채널/그룹을 불러올 수 없습니다.", color="danger"),
-        ])
-
-    dialog_opts = [
-        {"label": f"{'🔔 ' if d['unread'] else ''}{d['name']} ({d['unread']})",
-         "value": d["entity_key"]}
-        for d in dialogs
-    ]
-
+    # layout()에서는 network 호출 없이 뼈대만 반환.
+    # 채널 목록은 init_dialogs 콜백이 비동기로 채워 넣음.
     return html.Div([
+        dcc.Store(id="tg-load-trigger", data=True),  # 탭 렌더 시 init_dialogs 트리거
+
         dbc.Row([
             dbc.Col(html.H5("💬 텔레그램 채널 뷰어", className="mb-0"), width="auto"),
-        ], className="mb-3"),
+            dbc.Col(
+                dbc.Button("🔄 채널 새로고침", id="tg-refresh-channels-btn",
+                           color="light", size="sm", n_clicks=0),
+                width="auto", className="ms-auto",
+            ),
+        ], className="mb-3 align-items-center"),
 
         dbc.Row([
             dbc.Col(
-                dcc.Dropdown(
-                    id="tg-channel-dropdown",
-                    options=dialog_opts,
-                    value=dialog_opts[0]["value"] if dialog_opts else None,
-                    clearable=False,
-                    style={"fontSize": "13px"},
+                dbc.Spinner(
+                    dcc.Dropdown(
+                        id="tg-channel-dropdown",
+                        placeholder="채널 불러오는 중…",
+                        clearable=False,
+                        style={"fontSize": "13px"},
+                    ),
+                    color="primary", size="sm",
                 ),
                 width=5,
             ),
@@ -223,8 +215,36 @@ def layout():
             ),
         ], className="mb-3 g-2 align-items-center"),
 
+        html.Div(id="tg-channel-status", className="mb-2"),
         dbc.Spinner(html.Div(id="tg-messages"), color="primary"),
     ])
+
+
+# ── Callbacks ───────────────────────────────────────────────────────────────────
+
+@callback(
+    Output("tg-channel-dropdown",    "options"),
+    Output("tg-channel-dropdown",    "value"),
+    Output("tg-channel-status",      "children"),
+    Input("tg-load-trigger",         "data"),       # 탭 초기 렌더 시 1회
+    Input("tg-refresh-channels-btn", "n_clicks"),   # 수동 새로고침
+    prevent_initial_call=False,
+)
+def init_dialogs(_, n_refresh):
+    if ctx.triggered_id == "tg-refresh-channels-btn":
+        load_dialogs.clear()
+
+    dialogs = load_dialogs()
+
+    if not dialogs:
+        return [], None, dbc.Alert("채널/그룹을 불러올 수 없습니다.", color="danger")
+
+    opts = [
+        {"label": f"{'🔔 ' if d['unread'] else ''}{d['name']} ({d['unread']})",
+         "value": d["entity_key"]}
+        for d in dialogs
+    ]
+    return opts, opts[0]["value"] if opts else None, html.Div()
 
 
 @callback(
