@@ -78,7 +78,7 @@ def layout():
                         min=0.1,
                         max=300,
                         step=0.5,
-                        debounce=True,
+                        debounce=False,
                         className="form-control form-control-sm",
                     ),
                 ]),
@@ -300,13 +300,13 @@ def pick_suggestion(n_clicks_list):
     Output("val-fin-data",      "data"),
     Output("val-price-data",    "data"),
     Input("val-search-btn",     "n_clicks"),
-    Input("val-type-select",    "value"),   # 방식 변경 시 자동 재계산
-    Input("val-mult-input",     "value"),   # 배수 변경 시 자동 재계산 (debounce 후)
     State("val-corp-input",     "value"),
+    State("val-type-select",    "value"),
+    State("val-mult-input",     "value"),   # debounce=False → 버튼 클릭 시 최신값 반영
     State("val-chart-period",   "value"),
     prevent_initial_call=True,
 )
-def search_and_render(n_clicks, val_type: str, target_mult, corp_name: str, chart_period):
+def search_and_render(n_clicks, corp_name: str, val_type: str, target_mult, chart_period):
     HIDDEN = {"display": "none"}
     SHOWN  = {"display": "block"}
 
