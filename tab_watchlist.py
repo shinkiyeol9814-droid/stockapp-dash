@@ -167,6 +167,7 @@ def _load_all_rows(watchlist: dict, local_settings: dict | None = None) -> list:
 def layout():
     return html.Div([
         dcc.Store(id="wl-local-settings", storage_type="session", data={}),
+        dcc.Store(id="wl-saved-order",   storage_type="session", data=[]),
         dcc.Interval(id="wl-interval", interval=3 * 60 * 1000, n_intervals=0),
 
         # Header
@@ -194,11 +195,6 @@ def layout():
             dbc.Col(
                 dbc.Button("➕ 추가", id="wl-add-btn", color="primary",
                            size="sm", n_clicks=0),
-                width="auto"
-            ),
-            dbc.Col(
-                dbc.Button("💾 순서 저장", id="wl-save-order-btn", color="secondary",
-                           size="sm", n_clicks=0, outline=True),
                 width="auto"
             ),
             dbc.Col(
@@ -315,17 +311,18 @@ def update_grid(n_int, n_add, n_delete, n_refresh,
     return rows, no_update, local_settings
 
 
-# 3) Cell edited → recalculate only that row, save settings to local store
+# 3) Cell edited → recalculate row + auto-save method/multiple to GitHub
 @callback(
-    Output("wl-grid", "rowTransaction"),
-    Output("wl-local-settings", "data", allow_duplicate=True),
+    Output("wl-grid",           "rowTransaction"),
+    Output("wl-local-settings", "data",     allow_duplicate=True),
+    Output("wl-status",         "children", allow_duplicate=True),
     Input("wl-grid", "cellValueChanged"),
     State("wl-local-settings", "data"),
     prevent_initial_call=True,
 )
 def on_cell_edit(changed_cells, local_settings):
     if not changed_cells:
-        return no_update, no_update
+        return no_update, no_update, no_update
 
     local_settings = local_settings or {}
     updates = []
@@ -338,15 +335,13 @@ def on_cell_edit(changed_cells, local_settings):
         method   = row_data.get("method",   "POR(영업익)")
         multiple = float(row_data.get("multiple", 12.0))
 
-        # Persist to local settings
         local_settings[code] = {"method": method, "multiple": multiple}
 
-        # Recalculate
-        fin_df, stocks      = get_watch_financials(code)
-        price               = row_data.get("price")
-        tp_26, up_26        = calc_target(fin_df, stocks, method, multiple, price, CUR_YEAR)
-        tp_27, up_27        = calc_target(fin_df, stocks, method, multiple, price, NEXT_YEAR)
-        curr_m              = calc_current_mult(fin_df, stocks, method, price, CUR_YEAR)
+        fin_df, stocks = get_watch_financials(code)
+        price          = row_data.get("price")
+        tp_26, up_26   = calc_target(fin_df, stocks, method, multiple, price, CUR_YEAR)
+        tp_27, up_27   = calc_target(fin_df, stocks, method, multiple, price, NEXT_YEAR)
+        curr_m         = calc_current_mult(fin_df, stocks, method, price, CUR_YEAR)
 
         updates.append({
             **row_data,
@@ -359,20 +354,53 @@ def on_cell_edit(changed_cells, local_settings):
             "up_27":    round(up_27, 1) if up_27  is not None else None,
         })
 
-    return {"update": updates}, local_settings
+    # Auto-save method/multiple changes to GitHub
+    wl = load_watchlist()
+    changed = False
+    for cell in changed_cells:
+        row_data = cell.get("data", {})
+        code = row_data.get("code")
+        if not code or code not in wl:
+            continue
+        new_method   = row_data.get("method",   wl[code].get("method",   "POR(영업익)"))
+        new_multiple = float(row_data.get("multiple", wl[code].get("multiple", 12.0)))
+        if (wl[code].get("method") != new_method
+                or float(wl[code].get("multiple", 12.0)) != new_multiple):
+            wl[code]["method"]   = new_method
+            wl[code]["multiple"] = new_multiple
+            changed = True
+
+    if changed:
+        ok, err = save_watchlist(wl)
+        if ok:
+            load_watchlist.clear()
+            status = dbc.Alert("✅ 저장됨", color="success", duration=2000, dismissable=True)
+        else:
+            status = dbc.Alert(f"저장 실패: {err}", color="danger", duration=3000, dismissable=True)
+    else:
+        status = no_update
+
+    return {"update": updates}, local_settings, status
 
 
-# 4) Save current row order to GitHub
+# 4) Auto-save row order when user drags to reorder
 @callback(
-    Output("wl-status", "children", allow_duplicate=True),
-    Input("wl-save-order-btn", "n_clicks"),
-    State("wl-grid", "virtualRowData"),
+    Output("wl-status",      "children", allow_duplicate=True),
+    Output("wl-saved-order", "data",     allow_duplicate=True),
+    Input("wl-grid", "virtualRowData"),
+    State("wl-saved-order",    "data"),
     State("wl-local-settings", "data"),
     prevent_initial_call=True,
 )
-def save_order(n_clicks, virtual_rows, local_settings):
+def auto_save_order(virtual_rows, saved_order, local_settings):
     if not virtual_rows:
-        return no_update
+        return no_update, no_update
+
+    current_order = [r["code"] for r in virtual_rows if r.get("code")]
+
+    # 순서가 바뀐 경우에만 저장
+    if current_order == (saved_order or []):
+        return no_update, no_update
 
     local_settings = local_settings or {}
     wl_gh = load_watchlist()
@@ -390,5 +418,12 @@ def save_order(n_clicks, virtual_rows, local_settings):
         }
 
     if save_watchlist(new_wl):
-        return dbc.Alert("💾 순서·설정 저장됐습니다.", color="success", duration=3000, dismissable=True)
-    return dbc.Alert("저장 실패 (GH_PAT 확인)", color="danger", duration=4000, dismissable=True)
+        load_watchlist.clear()
+        return (
+            dbc.Alert("💾 순서 저장됨", color="success", duration=2000, dismissable=True),
+            current_order,
+        )
+    return (
+        dbc.Alert("저장 실패 (GH_PAT 확인)", color="danger", duration=3000, dismissable=True),
+        no_update,
+    )

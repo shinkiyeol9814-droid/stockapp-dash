@@ -88,8 +88,13 @@ def layout():
         # Suggestion dropdown
         html.Div(id="val-suggestions", className="mb-2"),
 
-        # Results (cards + financial table)
-        html.Div(id="val-results"),
+        # Results (cards + financial table) — Loading spinner 표시
+        dcc.Loading(
+            html.Div(id="val-results"),
+            type="circle",
+            color="#0d6efd",
+            style={"minHeight": "60px"},
+        ),
 
         # Chart section — always in static layout so val-chart-period is always accessible
         html.Div([
@@ -107,7 +112,11 @@ def layout():
                     width="auto", className="ms-auto",
                 ),
             ], className="mb-2 align-items-center"),
-            dbc.Spinner(html.Div(id="val-chart"), color="primary", size="sm"),
+            dcc.Loading(
+                html.Div(id="val-chart"),
+                type="dot",
+                color="#0d6efd",
+            ),
         ], id="val-chart-section", style={"display": "none"}),
     ])
 
@@ -283,7 +292,7 @@ def search_and_render(n_clicks, corp_name: str, val_type: str, target_mult, char
     HIDDEN = {"display": "none"}
     SHOWN  = {"display": "block"}
 
-    if not corp_name:
+    if not n_clicks or not corp_name:
         return (no_update,) * 7
 
     target_mult = float(target_mult or 12)
