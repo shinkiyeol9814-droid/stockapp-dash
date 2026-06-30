@@ -1,0 +1,41 @@
+name: Auto Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        run: |
+          # 이전 태그부터 현재 태그까지 커밋 목록 수집
+          PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${{ github.ref_name }}$" | head -1)
+          TAG="${{ github.ref_name }}"
+
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s" --no-merges)
+          else
+            COMMITS=$(git log --pretty=format:"- %s" --no-merges | head -30)
+          fi
+
+          NOTES="## 변경사항
+
+${COMMITS}
+
+---
+*자동 생성된 릴리즈 노트*"
+
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "$NOTES"
+        env:
+          GH_TOKEN: ${{ github.token }}

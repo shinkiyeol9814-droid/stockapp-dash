@@ -1,0 +1,14 @@
+name: Keep Render App Alive
+
+on:
+  schedule:
+    - cron: '*/14 * * * *'  # 14분마다 ping (Render free tier 15분 idle timeout 방지)
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render App
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" ${{ secrets.RENDER_APP_URL }} || true

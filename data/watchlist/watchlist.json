@@ -1,0 +1,34 @@
+{
+  "005930": {
+    "method": "PER(순이익)",
+    "multiple": 10.0
+  },
+  "000660": {
+    "method": "PER(순이익)",
+    "multiple": 10.0
+  },
+  "078600": {
+    "method": "PER(순이익)",
+    "multiple": 50.0
+  },
+  "011070": {
+    "method": "PER(순이익)",
+    "multiple": 30.0
+  },
+  "329180": {
+    "method": "PER(순이익)",
+    "multiple": 30.0
+  },
+  "010060": {
+    "method": "PER(순이익)",
+    "multiple": 20.0
+  },
+  "006400": {
+    "method": "PER(순이익)",
+    "multiple": 50.0
+  },
+  "278470": {
+    "method": "PER(순이익)",
+    "multiple": 30.0
+  }
+}
