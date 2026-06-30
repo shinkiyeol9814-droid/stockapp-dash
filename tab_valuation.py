@@ -40,6 +40,8 @@ FIN_COL_DEFS = [
      "valueFormatter": {"function": "params.value ? params.value.toFixed(1) : '-'"}},
 ]
 
+PERIOD_YEARS = {"1년": 1, "2년": 2, "3년": 3, "5년": 5, "전체": None}
+
 
 # ── Layout ─────────────────────────────────────────────────────────────────────
 def layout():
@@ -86,9 +88,142 @@ def layout():
         # Suggestion dropdown
         html.Div(id="val-suggestions", className="mb-2"),
 
-        # Results
+        # Results (cards + financial table)
         html.Div(id="val-results"),
+
+        # Chart section — always in static layout so val-chart-period is always accessible
+        html.Div([
+            html.Hr(className="my-3"),
+            dbc.Row([
+                dbc.Col(html.H6("📉 밸류에이션 차트", className="mb-0"), width="auto"),
+                dbc.Col(
+                    dbc.RadioItems(
+                        id="val-chart-period",
+                        options=[{"label": l, "value": l}
+                                 for l in ["1년", "2년", "3년", "5년", "전체"]],
+                        value="전체",
+                        inline=True,
+                    ),
+                    width="auto", className="ms-auto",
+                ),
+            ], className="mb-2 align-items-center"),
+            dbc.Spinner(html.Div(id="val-chart"), color="primary", size="sm"),
+        ], id="val-chart-section", style={"display": "none"}),
     ])
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _card(title, price_str, marcap_str, rate_str, is_up, is_zero=False):
+    color    = "#888" if is_zero else ("#C62828" if is_up else "#1565C0")
+    bg_color = "#f5f5f5" if is_zero else ("#fff5f5" if is_up else "#f0f4ff")
+    return dbc.Card(dbc.CardBody([
+        html.Div(title, className="text-muted", style={"fontSize": "12px", "fontWeight": "600"}),
+        html.Div(price_str, style={"fontSize": "22px", "fontWeight": "900", "color": "#222"}),
+        html.Div(f"시총: {marcap_str}", className="text-muted", style={"fontSize": "11px"}),
+        html.Span(rate_str, style={"color": color, "backgroundColor": bg_color,
+                                    "padding": "3px 8px", "borderRadius": "6px",
+                                    "fontWeight": "bold", "fontSize": "13px"}),
+    ]), className="text-center", style={"boxShadow": "0 2px 4px rgba(0,0,0,.07)"})
+
+
+def _build_chart(fin_df, df_price, stocks_count, curr_p, curr_marcap,
+                 val_type: str, col_p: str, target_mult: float,
+                 chart_period: str = "전체"):
+    try:
+        future_dates = pd.date_range(
+            start=df_price.index[-1], end=pd.to_datetime("2028-02-28"), freq="D"
+        )
+        # pandas 2.x 호환: Index.append() 대신 list concat 사용
+        extended_dates = pd.DatetimeIndex(
+            df_price.index.tolist() + future_dates[1:].tolist()
+        )
+
+        raw_metrics = pd.to_numeric(fin_df[col_p], errors="coerce").values
+        cur_metrics = pd.Series(raw_metrics).ffill().bfill().values
+        if "EBITDA" not in val_type:
+            cur_metrics = cur_metrics * UNIT
+        cur_metrics = np.nan_to_num(cur_metrics, nan=0.1)
+        cur_metrics = np.where(cur_metrics <= 0, 0.1, cur_metrics)
+
+        def _ts(dti):
+            return np.array([t.timestamp() for t in dti], dtype=float)
+
+        band_dates_ts = _ts(pd.to_datetime([f"{y}-12-28" for y in fin_df["Year"]]))
+        ext_ts        = _ts(extended_dates)
+        ext_interp    = np.interp(ext_ts, band_dates_ts, cur_metrics)
+
+        if "EBITDA" in val_type:
+            hist_metric = np.where(ext_interp[:len(df_price)] > 0,
+                                   ext_interp[:len(df_price)], np.nan)
+        else:
+            hist_marcap = df_price["Close"].values * stocks_count
+            hist_metric = np.where(ext_interp[:len(df_price)] > 0,
+                                   hist_marcap / ext_interp[:len(df_price)], np.nan)
+
+        valid = hist_metric[~np.isnan(hist_metric)]
+        valid = valid[(valid > 0) & (valid < 300)]
+        bands, avg_m = [], 0.0
+        if len(valid) > 0:
+            q5, q95 = np.percentile(valid, 5), np.percentile(valid, 95)
+            filt = valid[(valid >= q5) & (valid <= q95)]
+            if len(filt) > 0:
+                avg_m = float(np.mean(filt))
+                mn, mx = float(np.min(filt)), float(np.max(filt))
+                stp = (mx - mn) / 3 if mx > mn else 1.0
+                bands = sorted(set([round(mn + stp * i, 1) for i in range(4) if mn + stp * i > 0]))
+
+        colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd"]
+
+        if "EBITDA" in val_type:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=df_price.index, y=hist_metric,
+                name=f"현재 {val_type}",
+                line=dict(color="#333", width=1.5),
+            ))
+            for i, m in enumerate(bands):
+                fig.add_hline(y=m, line_dash="dot", line_color=colors[i % len(colors)],
+                              annotation_text=f"{m:.1f}x", annotation_position="right")
+            fig.add_hline(y=target_mult, line_dash="solid", line_color="#FF0000",
+                          annotation_text=f"목표 {target_mult:.1f}x", annotation_position="right",
+                          line_width=2)
+            fig.update_layout(yaxis_title=val_type, xaxis_title="",
+                              margin=dict(l=0, r=80, t=20, b=0), height=380)
+        else:
+            def _band_y(m_val):
+                return np.where(ext_interp > 0, ext_interp * float(m_val) / stocks_count, np.nan)
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=df_price.index, y=df_price["Close"],
+                name="주가",
+                line=dict(color="#333", width=1.5),
+            ))
+            for i, m in enumerate(bands):
+                fig.add_trace(go.Scatter(
+                    x=extended_dates, y=_band_y(m),
+                    name=f"{val_type.split('(')[0]} {m:.0f}x",
+                    line=dict(color=colors[i % len(colors)], dash="dot", width=1),
+                ))
+            fig.add_trace(go.Scatter(
+                x=extended_dates, y=_band_y(target_mult),
+                name=f"목표 {target_mult:.1f}x",
+                line=dict(color="#FF0000", width=2),
+            ))
+            fig.update_layout(yaxis_title="주가 (원)", xaxis_title="",
+                              margin=dict(l=0, r=20, t=20, b=0), height=380,
+                              legend=dict(orientation="h", y=-0.15))
+
+        # 차트 기간 필터 적용
+        years = PERIOD_YEARS.get(chart_period or "전체")
+        if years:
+            x_start = pd.Timestamp.now() - pd.DateOffset(years=years)
+            fig.update_xaxes(range=[x_start, extended_dates[-1]])
+
+        return dcc.Graph(figure=fig, config={"displayModeBar": False})
+    except Exception as e:
+        return dbc.Alert(f"차트 생성 실패: {e}", color="warning")
 
 
 # ── Callbacks ───────────────────────────────────────────────────────────────────
@@ -130,20 +265,26 @@ def pick_suggestion(n_clicks_list):
 
 
 @callback(
-    Output("val-results",     "children"),
-    Output("val-status",      "children"),
-    Output("val-ticker-info", "data"),
-    Output("val-fin-data",    "data"),
-    Output("val-price-data",  "data"),
-    Input("val-search-btn",   "n_clicks"),
-    State("val-corp-input",   "value"),
-    State("val-type-select",  "value"),
-    State("val-mult-input",   "value"),
+    Output("val-results",       "children"),
+    Output("val-chart",         "children"),
+    Output("val-chart-section", "style"),
+    Output("val-status",        "children"),
+    Output("val-ticker-info",   "data"),
+    Output("val-fin-data",      "data"),
+    Output("val-price-data",    "data"),
+    Input("val-search-btn",     "n_clicks"),
+    State("val-corp-input",     "value"),
+    State("val-type-select",    "value"),
+    State("val-mult-input",     "value"),
+    State("val-chart-period",   "value"),
     prevent_initial_call=True,
 )
-def search_and_render(n_clicks, corp_name: str, val_type: str, target_mult):
+def search_and_render(n_clicks, corp_name: str, val_type: str, target_mult, chart_period):
+    HIDDEN = {"display": "none"}
+    SHOWN  = {"display": "block"}
+
     if not corp_name:
-        return no_update, no_update, no_update, no_update, no_update
+        return (no_update,) * 7
 
     target_mult = float(target_mult or 12)
     listing     = get_ticker_listing()
@@ -153,6 +294,7 @@ def search_and_render(n_clicks, corp_name: str, val_type: str, target_mult):
     if ticker_row.empty:
         return (
             html.Div(),
+            no_update, HIDDEN,
             dbc.Alert(f"종목을 찾을 수 없습니다: {corp_name}", color="danger"),
             no_update, no_update, no_update,
         )
@@ -162,8 +304,8 @@ def search_and_render(n_clicks, corp_name: str, val_type: str, target_mult):
     fin_df       = get_hybrid_financials(ticker)
 
     # Merge user estimates
-    user_est     = load_user_estimates()
-    ticker_est   = user_est.get(ticker, {})
+    user_est   = load_user_estimates()
+    ticker_est = user_est.get(ticker, {})
     for idx, row in fin_df.iterrows():
         yr = str(row["Year"])
         if yr in ticker_est:
@@ -176,6 +318,7 @@ def search_and_render(n_clicks, corp_name: str, val_type: str, target_mult):
     if df_price.empty:
         return (
             html.Div(),
+            no_update, HIDDEN,
             dbc.Alert("주가 데이터를 불러올 수 없습니다.", color="warning"),
             no_update, no_update, no_update,
         )
@@ -187,7 +330,6 @@ def search_and_render(n_clicks, corp_name: str, val_type: str, target_mult):
     last_date   = df_price.index[-1].strftime("%m.%d")
 
     col_p     = COL_MAP.get(val_type, "영업이익")
-    band_name = val_type.split("(")[0]
 
     def _get_tp(year: int):
         row = fin_df[fin_df["Year"] == year]
@@ -210,19 +352,6 @@ def search_and_render(n_clicks, corp_name: str, val_type: str, target_mult):
     tp1, up1, tm1 = _get_tp(y1)
     tp2, up2, tm2 = _get_tp(y2)
 
-    def _card(title, price_str, marcap_str, rate_str, is_up, is_zero=False):
-        color    = "#888" if is_zero else ("#C62828" if is_up else "#1565C0")
-        bg_color = "#f5f5f5" if is_zero else ("#fff5f5" if is_up else "#f0f4ff")
-        return dbc.Card(dbc.CardBody([
-            html.Div(title, className="text-muted", style={"fontSize": "12px", "fontWeight": "600"}),
-            html.Div(price_str, style={"fontSize": "22px", "fontWeight": "900", "color": "#222"}),
-            html.Div(f"시총: {marcap_str}", className="text-muted", style={"fontSize": "11px"}),
-            html.Span(rate_str, style={"color": color, "backgroundColor": bg_color,
-                                        "padding": "3px 8px", "borderRadius": "6px",
-                                        "fontWeight": "bold", "fontSize": "13px"}),
-        ]), className="text-center", style={"boxShadow": "0 2px 4px rgba(0,0,0,.07)"})
-
-    # Cards
     card1 = _card(f"현재가 ({last_date})", f"{curr_p:,.0f}원",
                   f"{curr_marcap:,.0f}억", f"{updown:+.2f}%", updown > 0, is_zero=(updown == 0))
     card2 = (_card(f"목표가 ({str(y1)[-2:]}년)", f"{tp1:,.0f}원", f"{tm1:,.0f}억",
@@ -232,7 +361,6 @@ def search_and_render(n_clicks, corp_name: str, val_type: str, target_mult):
                    f"목표대비 {up2:+.1f}%", up2 > 0)
              if tp2 > 0 else _card(f"목표가 ({str(y2)[-2:]}년)", "N/A", "-", "데이터 없음", False, True))
 
-    # Financial table rows
     table_rows = []
     for _, row in fin_df.iterrows():
         d = {"Label": row["Label"] if "Label" in row else f"{row['Year']}년"}
@@ -242,13 +370,13 @@ def search_and_render(n_clicks, corp_name: str, val_type: str, target_mult):
         table_rows.append(d)
 
     chart_div = _build_chart(fin_df, df_price, stocks_count, curr_p, curr_marcap,
-                              val_type, col_p, target_mult)
+                             val_type, col_p, target_mult, chart_period or "전체")
 
     ticker_info = {"ticker": ticker, "name": corp_name, "stocks": stocks_count}
     fin_ser     = json.dumps(fin_df.to_dict("records"), default=str)
     price_ser   = json.dumps({
-        "dates":  [d.strftime("%Y-%m-%d") for d in df_price.index],
-        "close":  df_price["Close"].tolist(),
+        "dates": [d.strftime("%Y-%m-%d") for d in df_price.index],
+        "close": df_price["Close"].tolist(),
     })
 
     results = html.Div([
@@ -267,113 +395,45 @@ def search_and_render(n_clicks, corp_name: str, val_type: str, target_mult):
         dbc.Row([
             dbc.Col(dbc.Button("💾 추정치 저장", id="val-save-btn", color="primary",
                                size="sm", n_clicks=0), width="auto"),
-            dbc.Col(dbc.Button("🔄 재계산", id="val-recalc-btn", color="secondary",
-                               size="sm", n_clicks=0, outline=True), width="auto"),
-        ], className="mt-2 mb-4"),
+        ], className="mt-2 mb-3"),
         html.Div(id="val-save-status", className="mb-2"),
-
-        html.H6("📉 밸류에이션 차트", className="mb-2"),
-        dbc.RadioItems(
-            id="val-chart-period",
-            options=[{"label": l, "value": l} for l in ["1년", "2년", "3년", "5년", "전체"]],
-            value="전체",
-            inline=True,
-            className="mb-2",
-        ),
-        chart_div,
     ])
 
-    return results, no_update, ticker_info, fin_ser, price_ser
+    return results, chart_div, SHOWN, no_update, ticker_info, fin_ser, price_ser
 
 
-def _build_chart(fin_df, df_price, stocks_count, curr_p, curr_marcap,
-                 val_type: str, col_p: str, target_mult: float):
-    """Build Plotly valuation chart."""
-    try:
-        future_dates   = pd.date_range(start=df_price.index[-1], end=pd.to_datetime("2028-02-28"), freq="D")
-        extended_dates = df_price.index.append(future_dates[1:])
+@callback(
+    Output("val-chart", "children", allow_duplicate=True),
+    Input("val-chart-period",  "value"),
+    State("val-ticker-info",   "data"),
+    State("val-fin-data",      "data"),
+    State("val-price-data",    "data"),
+    State("val-type-select",   "value"),
+    State("val-mult-input",    "value"),
+    prevent_initial_call=True,
+)
+def update_chart_period(chart_period, ticker_info, fin_ser, price_ser, val_type, target_mult):
+    if not ticker_info or not fin_ser or not price_ser:
+        return no_update
 
-        raw_metrics = pd.to_numeric(fin_df[col_p], errors="coerce").values
-        cur_metrics = pd.Series(raw_metrics).ffill().bfill().values
-        if "EBITDA" not in val_type:
-            cur_metrics = cur_metrics * UNIT
-        cur_metrics = np.nan_to_num(cur_metrics, nan=0.1)
-        cur_metrics = np.where(cur_metrics <= 0, 0.1, cur_metrics)
+    fin_df = pd.DataFrame(json.loads(fin_ser))
+    pd.to_datetime(fin_df["Year"].astype(str), format="%Y", errors="coerce")
 
-        band_dates_ts = pd.to_datetime([f"{y}-12-28" for y in fin_df["Year"]]).map(pd.Timestamp.timestamp).values
-        ext_interp    = np.interp(
-            extended_dates.map(pd.Timestamp.timestamp).values,
-            band_dates_ts, cur_metrics
-        )
+    price_data = json.loads(price_ser)
+    df_price   = pd.DataFrame(
+        {"Close": price_data["close"]},
+        index=pd.to_datetime(price_data["dates"]),
+    )
 
-        if "EBITDA" in val_type:
-            hist_metric = np.where(ext_interp[:len(df_price)] > 0, ext_interp[:len(df_price)], np.nan)
-        else:
-            hist_marcap = df_price["Close"].values * stocks_count
-            hist_metric = np.where(ext_interp[:len(df_price)] > 0, hist_marcap / ext_interp[:len(df_price)], np.nan)
+    val_type    = val_type or "POR(영업익)"
+    col_p       = COL_MAP.get(val_type, "영업이익")
+    stocks      = ticker_info.get("stocks", 1)
+    curr_p      = float(df_price.iloc[-1]["Close"])
+    curr_marcap = (curr_p * stocks) / UNIT
+    target      = float(target_mult or 12)
 
-        valid = hist_metric[~np.isnan(hist_metric)]
-        valid = valid[(valid > 0) & (valid < 300)]
-        bands, avg_m = [], 0.0
-        if len(valid) > 0:
-            q5, q95 = np.percentile(valid, 5), np.percentile(valid, 95)
-            filt = valid[(valid >= q5) & (valid <= q95)]
-            if len(filt) > 0:
-                avg_m = float(np.mean(filt))
-                mn, mx = float(np.min(filt)), float(np.max(filt))
-                stp = (mx - mn) / 3 if mx > mn else 1.0
-                bands = sorted(set([round(mn + stp * i, 1) for i in range(4) if mn + stp * i > 0]))
-
-        colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd"]
-
-        if "EBITDA" in val_type:
-            # Ratio trend chart
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=df_price.index, y=hist_metric,
-                name=f"현재 {val_type}",
-                line=dict(color="#333", width=1.5),
-            ))
-            for i, m in enumerate(bands):
-                fig.add_hline(y=m, line_dash="dot", line_color=colors[i % len(colors)],
-                              annotation_text=f"{m:.1f}x", annotation_position="right")
-            fig.add_hline(y=target_mult, line_dash="solid", line_color="#FF0000",
-                          annotation_text=f"목표 {target_mult:.1f}x", annotation_position="right",
-                          line_width=2)
-            fig.update_layout(yaxis_title=val_type, xaxis_title="",
-                              margin=dict(l=0, r=80, t=20, b=0), height=380)
-        else:
-            # Price band chart
-            def _band_y(m_val):
-                return np.where(ext_interp > 0, ext_interp * float(m_val) / stocks_count, np.nan)
-
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=df_price.index, y=df_price["Close"],
-                name="주가",
-                line=dict(color="#333", width=1.5),
-                fill="none",
-            ))
-            for i, m in enumerate(bands):
-                y_vals = _band_y(m)[extended_dates.isin(extended_dates)]
-                fig.add_trace(go.Scatter(
-                    x=extended_dates, y=_band_y(m),
-                    name=f"{val_type.split('(')[0]} {m:.0f}x",
-                    line=dict(color=colors[i % len(colors)], dash="dot", width=1),
-                ))
-            # Target band
-            fig.add_trace(go.Scatter(
-                x=extended_dates, y=_band_y(target_mult),
-                name=f"목표 {target_mult:.1f}x",
-                line=dict(color="#FF0000", width=2),
-            ))
-            fig.update_layout(yaxis_title="주가 (원)", xaxis_title="",
-                              margin=dict(l=0, r=20, t=20, b=0), height=380,
-                              legend=dict(orientation="h", y=-0.15))
-
-        return dcc.Graph(figure=fig, config={"displayModeBar": False})
-    except Exception as e:
-        return dbc.Alert(f"차트 생성 실패: {e}", color="warning")
+    return _build_chart(fin_df, df_price, stocks, curr_p, curr_marcap,
+                        val_type, col_p, target, chart_period or "전체")
 
 
 @callback(
@@ -391,7 +451,7 @@ def save_estimates(n_clicks, grid_rows, ticker_info, orig_fin_ser):
     ticker   = ticker_info.get("ticker")
     orig_fin = pd.DataFrame(json.loads(orig_fin_ser)) if orig_fin_ser else None
 
-    new_est  = load_user_estimates()
+    new_est = load_user_estimates()
     if ticker not in new_est:
         new_est[ticker] = {}
 
@@ -416,7 +476,7 @@ def save_estimates(n_clicks, grid_rows, ticker_info, orig_fin_ser):
     ok, err = save_to_github(
         ESTIMATES_FILE,
         json.dumps(new_est, indent=4, ensure_ascii=False),
-        f"Update {ticker_info.get('name','')} estimates"
+        f"Update {ticker_info.get('name', '')} estimates",
     )
     if ok:
         get_hybrid_financials.clear()
