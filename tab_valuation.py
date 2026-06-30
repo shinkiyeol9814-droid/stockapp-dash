@@ -71,13 +71,21 @@ def layout():
             dbc.Col(
                 dbc.InputGroup([
                     dbc.InputGroupText("배수"),
-                    dbc.Input(id="val-mult-input", type="number", value=12,
-                              min=0.1, max=300, step=0.5, size="sm"),
+                    dcc.Input(
+                        id="val-mult-input",
+                        type="number",
+                        value=12,
+                        min=0.1,
+                        max=300,
+                        step=0.5,
+                        debounce=True,
+                        className="form-control form-control-sm",
+                    ),
                 ]),
                 width=2,
             ),
             dbc.Col(
-                dbc.Button("🔍 갱신", id="val-search-btn", color="primary",
+                dbc.Button("🔍 검색", id="val-search-btn", color="primary",
                            size="sm", n_clicks=0),
                 width="auto",
             ),
@@ -230,7 +238,17 @@ def _build_chart(fin_df, df_price, stocks_count, curr_p, curr_marcap,
             x_start = pd.Timestamp.now() - pd.DateOffset(years=years)
             fig.update_xaxes(range=[x_start, extended_dates[-1]])
 
-        return dcc.Graph(figure=fig, config={"displayModeBar": False})
+        fig.update_layout(
+            dragmode="zoom",
+            modebar_remove=["lasso2d", "select2d", "toImage", "autoScale2d"],
+        )
+        return dcc.Graph(
+            figure=fig,
+            config={
+                "scrollZoom":    True,       # PC: 마우스 휠 확대/축소
+                "displayModeBar": "hover",   # 호버 시 툴바 노출 (리셋·줌 버튼 포함)
+            },
+        )
     except Exception as e:
         return dbc.Alert(f"차트 생성 실패: {e}", color="warning")
 
@@ -282,17 +300,17 @@ def pick_suggestion(n_clicks_list):
     Output("val-fin-data",      "data"),
     Output("val-price-data",    "data"),
     Input("val-search-btn",     "n_clicks"),
+    Input("val-type-select",    "value"),   # 방식 변경 시 자동 재계산
+    Input("val-mult-input",     "value"),   # 배수 변경 시 자동 재계산 (debounce 후)
     State("val-corp-input",     "value"),
-    State("val-type-select",    "value"),
-    State("val-mult-input",     "value"),
     State("val-chart-period",   "value"),
     prevent_initial_call=True,
 )
-def search_and_render(n_clicks, corp_name: str, val_type: str, target_mult, chart_period):
+def search_and_render(n_clicks, val_type: str, target_mult, corp_name: str, chart_period):
     HIDDEN = {"display": "none"}
     SHOWN  = {"display": "block"}
 
-    if not n_clicks or not corp_name:
+    if not corp_name:
         return (no_update,) * 7
 
     target_mult = float(target_mult or 12)
