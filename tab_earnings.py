@@ -151,11 +151,10 @@ def toggle_fav_filter(n, show):
 
 
 @callback(
-    Output("ea-content",    "children"),
-    Output("ea-status",     "children"),
-    Output("ea-favorites",  "data", allow_duplicate=True),
-    Input("ea-favorites",   "data"),
-    Input("ea-show-favs",   "data"),
+    Output("ea-content", "children"),
+    Output("ea-status",  "children"),
+    Input("ea-favorites", "data"),
+    Input("ea-show-favs", "data"),
     prevent_initial_call=False,
 )
 def render_earnings(favorites_list, show_favs):
@@ -163,9 +162,9 @@ def render_earnings(favorites_list, show_favs):
     results   = _load_earnings()
 
     if results is None:
-        return dbc.Alert("📂 수집된 실적 데이터가 없습니다.", color="info"), html.Div(), no_update
+        return dbc.Alert("📂 수집된 실적 데이터가 없습니다.", color="info"), html.Div()
     if not results:
-        return dbc.Alert("분석된 실적 데이터가 없습니다.", color="warning"), html.Div(), no_update
+        return dbc.Alert("분석된 실적 데이터가 없습니다.", color="warning"), html.Div()
 
     if show_favs:
         filtered = [r for r in results if r.get("종목코드", r.get("name", "")) in favorites
@@ -174,7 +173,6 @@ def render_earnings(favorites_list, show_favs):
             return (
                 html.Div(),
                 dbc.Alert("관심 종목이 없습니다.", color="info"),
-                no_update,
             )
         display_results = filtered
     else:
@@ -229,7 +227,7 @@ def render_earnings(favorites_list, show_favs):
 
         cards.append(card)
 
-    return html.Div(cards), no_update, no_update
+    return html.Div(cards), no_update
 
 
 @callback(
